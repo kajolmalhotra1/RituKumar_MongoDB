@@ -1,0 +1,64 @@
+db.Myntra_SAP_Orders.createIndex({tender_item_number: 1})
+				db.Myntra_fynd_Orders.createIndex({bag_id: 1})
+				db.Myntra_fynd_Returns.createIndex({bag_id: 1})
+				db.Myntra_SAP_Orders.aggregate([
+
+    				{ "$addFields": { "tender_item_number": { "$toInt": "$tender_item_number" } } },
+    				{
+        			  "$lookup": {
+            			  "from": "Myntra_fynd_Orders",
+            			  "localField": "tender_item_number",
+            			  "foreignField": "bag_id",
+            			  "as": "matched_saporders"}},
+				{
+        			  "$addFields": {
+            			  "sap_order_release_id": {
+                		  "$cond": {
+                    		  "if": { "$gt": [{ "$size": "$matched_saporders" }, 0] },
+                    		  "then": { "$arrayElemAt": ["$matched_saporders.affiliate_order_id", 0] },
+                                  "else": null }}}},
+				{
+        			  "$lookup": {
+            			  "from": "Myntra_fynd_Returns",
+             			  "localField": "tender_item_number",
+            			  "foreignField": "bag_id",
+            			  "as": "matched_sapreturns"}},
+				{
+        			  "$addFields": {
+            			  "sap_return_release_id": {
+                		  "$cond": {
+                    		  "if": { "$gt": [{ "$size": "$matched_sapreturns" }, 0] },
+                    		  "then": { "$arrayElemAt": ["$matched_sapreturns.affiliate_order_id", 0] },
+                    		  "else": null }}}},
+				{
+        			  "$addFields": {
+            			  "new_sap_order_release_id": {
+                		  "$cond": {
+                    		  "if": { "$eq": ["$sap_order_release_id", null] },
+                    	          "then": "$sap_return_release_id",
+                    		  "else": "$sap_order_release_id"}}}},
+				{ "$addFields": { "tender_value": { "$toInt": "$tender_value" } } },
+				
+
+{
+        $group: {
+            _id: {
+                new_sap_order_release_id: "$new_sap_order_release_id",
+                department: "$department",
+                tender_item_number: "$tender_item_number",
+                store: "$store",
+                ship_sales: "$ship_sales"
+            },
+            "total_tender_value": { $sum: "$tender_value" },
+            "data": { "$first": "$$ROOT" }
+        }
+    },
+     {
+        "$replaceRoot": { "newRoot": { "$mergeObjects": ["$data", { "total_tender_value": "$total_tender_value" }] } }
+    },
+ 
+    { "$project": { "new_sap_order_release_id": 1,"total_tender_value": 1, "department": 1, "tender_item_number": 1, "store": 1, "ship_sales": 1 } },
+
+				{ "$out": "Final_Sap_File" }
+				]);
+
