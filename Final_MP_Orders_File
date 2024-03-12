@@ -1,0 +1,175 @@
+// Step 1: Create an index on order_release_id field
+db.Final_MP_Orders_File.createIndex({ order_release_id: 1 });
+
+// Step 2: Create indexes on order_id and new_sap_order_release_id fields
+db.Final_MP_Returns_File.createIndex({ order_id: 1 });
+db.Final_Sap_File.createIndex({ department: 1 });
+db.Final_Sap_File.createIndex({ new_sap_order_release_id: 1 });
+
+// Step 3: Aggregate pipeline to perform reservoir sampling
+var reservoirSize = 27515; // Desired number of documents in the sample
+var reservoir = [];
+
+db.Final_MP_Orders_File.aggregate([
+    // Stage 1: Lookup MP Returns
+    {
+        $lookup: {
+            from: "Final_MP_Returns_File",
+            let: { order_release_id: "$order_release_id" },
+            pipeline: [
+                {
+                    $match: {
+                        $expr: { $eq: ["$order_id", "$$order_release_id"] },
+                        "lmdo_status": { $in: ["DELIVERED", "CLOSED"] }
+                    }
+                },
+                {
+                    $addFields: {
+                        mp_return_qty: "$quantity",
+                        mp_return_amt: "$returns_final_amount",
+                        mp_return_status: "$lmdo_status",
+                        mp_return_initiated: "$return_created_date"
+                    }
+                }
+            ],
+            as: "mp_returns_vl"
+        }
+    },
+    // Stage 2: Project the required fields from MP Returns
+    {
+        $addFields: {
+            mp_returns_vl: { $arrayElemAt: ["$mp_returns_vl", 0] } // Take the first element of the array
+        }
+    },
+    // Stage 3: Filter MP Returns
+    {
+        $addFields: {
+            mp_returns_vl: {
+                $cond: {
+                    if: { $eq: [{ $type: "$mp_returns_vl" }, "missing"] }, // If mp_returns_vl is missing, create an empty object
+                    then: {},
+                    else: "$mp_returns_vl"
+                }
+            }
+        }
+    },
+    // Stage 4: Add fields for MP Returns
+    {
+        $addFields: {
+            mp_return_qty: { $ifNull: ["$mp_returns_vl.quantity", 0] },
+            mp_return_amt: { $ifNull: ["$mp_returns_vl.returns_final_amount", 0] },
+            mp_return_status: { $ifNull: ["$mp_returns_vl.lmdo_status", 0] },
+            mp_return_initiated_date: { $ifNull: ["$mp_returns_vl.return_created_date", 0] }
+        }
+    },
+    // Stage 5: Lookup SAP Returns
+    {
+        $lookup: {
+            from: "Final_Sap_File",
+            let: { seller_order_id: "$seller_order_id" },
+            pipeline: [
+                {
+                    $match: {
+                        $expr: { $eq: ["$new_sap_order_release_id", "$$seller_order_id"] },
+                        "department": "RETURNS" // Filter for documents with department "RETURNS"
+                    }
+                },
+                {
+                    $addFields: {
+                        sap_return_amt: { $abs: { $toDouble: "$total_tender_value" } }
+                    }
+                }
+            ],
+            as: "sap_returns_data"
+        }
+    },
+    // Stage 6: Lookup SAP Sales
+    {
+        $lookup: {
+            from: "Final_Sap_File",
+            let: { seller_order_id: "$seller_order_id" },
+            pipeline: [
+                {
+                    $match: {
+                        $expr: { $eq: ["$new_sap_order_release_id", "$$seller_order_id"] },
+                        "department": "INVOICE" // Filter for documents with department "INVOICE"
+                    }
+                },
+                {
+                    $addFields: {
+                        sap_sales_amt: { $abs: { $toDouble: "$total_tender_value" } }
+                    }
+                }
+            ],
+            as: "sap_sales_data"
+        }
+    },
+    // Stage 7: Add fields for SAP Sales and Returns
+    {
+        $addFields: {
+            sap_sales_amt: { $ifNull: [{ $arrayElemAt: ["$sap_sales_data.sap_sales_amt", 0] }, 0] }, // Assign sap_sales_amt
+            sap_return_amt: { $ifNull: [{ $arrayElemAt: ["$sap_returns_data.sap_return_amt", 0] }, 0] } // Assign sap_return_amt
+        }
+    },
+    // Stage 8: Project the required fields
+    {
+        $project: {
+            _id: 0,
+            mp_release_id: "$order_release_id",
+            mp_master_id: "$seller_order_id",
+            sku_code: "$seller_sku_code",
+            sku_id: "$sku_id",
+            sales_order_date: "$created_on",
+            shipped_date: "$shipped_on",
+            fmpu_date: "$fmpu_date",
+            inscanned_on: "$inscanned_on",
+            mp_return_initiated_date: "$mp_returns_vl.mp_return_initiated",
+            mp_sales_qty: "$quantity",
+            mp_sales_amt: "$final_amount",
+            order_status_temp: "$order_status",
+            mp_return_qty: "$mp_return_qty",
+            mp_return_amt: "$mp_return_amt",
+            sap_sales_amt: 1,
+            sap_return_amt: 1,
+            return_status: "$mp_return_status"
+        }
+    },
+    // Stage 9: Reservoir Sampling
+    {
+        $sample: { size: reservoirSize }
+    },
+    {
+        $group: {
+            _id: null,
+            docs: { $push: "$$ROOT" }
+        }
+    },
+    {
+        $addFields: {
+            sampledDocs: {
+                $slice: ["$docs", reservoirSize] // Take the first 27514 documents
+            }
+        }
+    },
+    {
+        $unwind: "$sampledDocs"
+    },
+    {
+        $replaceRoot: { newRoot: "$sampledDocs" }
+    },
+    
+    // Stage 16: Group by mp_release_id to remove duplicates
+    {
+        $group: {
+            _id: "$mp_release_id",
+            doc: { $first: "$$ROOT" } // Keep the first document for each mp_release_id
+        }
+    },
+
+    // Stage 17: Replace root with the original documents
+    {
+        $replaceRoot: { newRoot: "$doc" }
+    },
+    // Stage 18: Output to collection
+    { $out: "RK_Recon_Sample" }
+]); 
