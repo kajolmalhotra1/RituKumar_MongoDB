@@ -1,0 +1,35 @@
+db.Myntra_MP_Returns.createIndex({order_id: 1})
+			 	db.Myntra_MP_Orders.createIndex({order_release_id: 1})
+				db.Myntra_MP_Returns.aggregate([
+    				{ "$addFields": { "order_id": { "$toString": "$order_id" } } },
+  			//	{ "$project": { "concatenated": { "$concat": ["$release_id", "$seller_order_id"] } } },
+  			//	{"$group" : { "_id": "$concatenated", "count": { "$sum": 1 } } },
+    				{"$group": { "_id": "$order_id", "dups": { $push: "$_id" }, "count": { "$sum": 1 } } },
+    				{ "$match": { "_id": { "$ne": null }, "count": { "$gt": 1 } } }],
+    				{ allowDiskUse: true })
+			//	{"$project": {"name" : "$_id", "_id" : 0,count:1}}
+    				.forEach(function (doc) {
+    				doc.dups.shift();
+    				db.Myntra_MP_Returns.remove({ _id: { $in: doc.dups } });
+ 				}); 
+
+    			// $LOOKUP SALES FINAL AMT INTO RETURNS
+			       db.Myntra_MP_Returns.aggregate([
+                    		{
+                      		  $lookup: {
+                       		  from: "Myntra_MP_Orders",
+                       		  localField: "order_id",
+                       		  foreignField: "order_release_id",
+                       		  as: "order_docs"}},
+                    		{     
+                      		  $unwind: "$order_docs"},     
+                    		{ $addFields: {returns_final_amount: "$order_docs.final_amount"}},
+                     	//	{$group: { _id:null, total_sales_final_amount: { $sum: "$sales_final_amount" } } }
+                    	//	{$project: {_id:0, order_id: 1, sales_final_amount: 1,}}  
+    			//	{$project: {"_id":0, "sales_final_amount":"$_id", "total": 1,}}
+			//	{$group: { _id: "$order_id", quantity: {$first:"$quantity"}, 							  					  total_sales_final_amount: { $first: "$sales_final_amount" } } },
+    			//	{$project: {_id: 1, quantity: 1, sales_final_amount: 1}} 
+
+				{$project: {_id: 0}},
+				{$out: "Final_MP_Returns_File}
+				]);
