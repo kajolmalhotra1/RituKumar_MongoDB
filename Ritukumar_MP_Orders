@@ -1,0 +1,17 @@
+db.Myntra_MP_Orders.aggregate([
+    				{ "$addFields": { "order_release_id": { "$toString": "$order_release_id" } } },
+    				{ "$project": { "concatenated": { "$concat": ["$release_id", "$seller_order_id"] } } },
+    			//	{"$group" : { "_id": "$concatenated", "count": { "$sum": 1 } } },
+        			{"$group": { "_id": "$concatenated", "dups": { $push: "$_id" }, "count": { "$sum": 1 } } }, 	
+    				{ "$match": { "_id": { "$ne": null }, "count": { "$gt": 1 } } }],
+    				{ allowDiskUse: true })
+    			// 	{"$project": {"name" : "$_id", "_id" : 0,count:1}}
+    				.forEach(function (doc) {
+        			doc.dups.shift();
+        			db.Myntra_MP_Orders.remove({ _id: { $in: doc.dups } });
+   				});
+			     	db.Myntra_MP_Orders.aggregate([
+   				{"$addFields":{"quantity": 1}},
+    				{ "$project": { "_id": 0 } },
+    				{ "$out": "Final_MP_Orders_File" }
+				]); 
