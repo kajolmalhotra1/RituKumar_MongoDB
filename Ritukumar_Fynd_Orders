@@ -1,0 +1,16 @@
+db.Myntra_fynd_Orders.createIndex({affiliate_order_id: 1})
+				db.Myntra_MP_Orders.createIndex({seller_order_id: 1})
+				db.Myntra_fynd_Orders.aggregate(["
+  				{
+    				 $lookup: {
+      				  from: "Myntra_MP_Orders",
+      				  localField: "affiliate_order_id",
+      				  foreignField: "seller_order_id",
+      				  as: "matched_orders"
+    				}},
+  				{$unwind: "$matched_orders"},
+  				{$addFields: {fynd_order_release_id: "$matched_orders.order_release_id"} },
+			
+				{$project: {_id: 0}},
+				{$out: "Final_Fynd_Orders"}
+				]);
