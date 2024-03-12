@@ -1,0 +1,17 @@
+	db.Myntra_fynd_Returns.createIndex({affiliate_order_id: 1})
+			//	db.Myntra_MP_Orders.createIndex({seller_order_id: 1})
+				db.Myntra_fynd_Returns.aggregate([
+  				{
+    				 $lookup: {
+      				 from: "Myntra_MP_Orders",
+      				 localField: "affiliate_order_id",
+      				 foreignField: "seller_order_id",
+      				 as: "matched_release"
+    				 }},
+  				{$unwind: "$matched_release"},
+  				{$addFields: {fynd_return_release_id: "$matched_release.order_release_id"} },
+			//  	{$project: { _id: 0, fynd_release_id: "$release_id",release_id: 1}},
+				{$project: {_id: 0}},
+				{$out: "Final_Fynd_Returns"}
+				]);
+
