@@ -1,0 +1,622 @@
+ db.RK_Recon_Sample.aggregate([
+    {
+        $addFields: {
+            order_status: {
+                $cond: {
+                    if: { $in: ["$order_status_temp", ["C", "DL", "RTO", "SH", "PK", "L", "WP"]] },
+                    then: {
+                        $switch: {
+                            branches: [
+                                { case: { $eq: ["$order_status_temp", "C"] }, then: "Completed" },
+                                { case: { $eq: ["$order_status_temp", "DL"] }, then: "Delivered" },
+                                { case: { $eq: ["$order_status_temp", "RTO"] }, then: "Return to Origin" },
+                                { case: { $eq: ["$order_status_temp", "SH"] }, then: "Shipped" },
+                                { case: { $eq: ["$order_status_temp", "PK"] }, then: "Packed" },
+                                { case: { $eq: ["$order_status_temp", "L"] }, then: "Lost" },
+                                { case: { $eq: ["$order_status_temp", "WP"] }, then: "Awaiting Pickup" }
+                            ],
+                            default: "blank"
+                        }
+                    },
+                    else: {
+                        $cond: {
+                            if: {
+                                $or: [
+                                    { $and: [{ $eq: ["$order_status_temp", "F"] }, { $ifNull: ["$shipped_date", true] }] },
+                                    { $and: [{ $eq: ["$order_status_temp", "F"] }, { $ifNull: ["$fmpu_date", true] }] },
+                                    { $and: [{ $eq: ["$order_status_temp", "F"] }, { $ifNull: ["$inscanned_date", true] }] }
+                                ]
+                            },
+                            then: "Failed before pickup",
+                            else: "Failed after pickup"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        "$addFields": {
+            "sales_diff": { "$subtract": ["$mp_sales_amt", "$sap_sales_amt"] }
+        }
+    },
+    {
+        "$addFields": {
+            "returns_diff": { "$subtract": ["$mp_return_amt", "$sap_return_amt"] }
+        }
+    },
+    {
+        "$addFields": {
+            "net_diff": { "$subtract": ["$sales_diff", "$returns_diff"] }
+        }
+    },
+    {
+        $addFields: {
+            exception_description_sales: {
+                $cond: {
+                    if: {
+                        $and: [
+                            { $eq: ["$sap_sales_amt", 0] },
+                            { $eq: ["$sap_return_amt", 0] },
+                            { $eq: ["$order_status", "Failed before pickup"] }
+                        ]
+                    },
+                    then: "CANCELLED",
+                    else: {
+                        $cond: {
+                            if: {
+                                $and: [
+                                    { $eq: ["$sap_sales_amt", 0] },
+                                    { $in: ["$order_status", ["Packed", "Awaiting Pickup"]] }
+                                ]
+                            },
+                            then: "UNSHIPPED",
+                            else: {
+                                $cond: {
+                                    if: {
+                                        $and: [
+                                            { $eq: ["$mp_sales_amt", "$sap_sales_amt"] },
+                                            { $eq: ["$sales_diff", 0] }
+                                        ]
+                                    },
+                                    then: "EXACT POSTED",
+                                    else: {
+                                        $cond: {
+                                            if: {
+                                                $and: [
+                                                    { $gt: ["$sales_diff", 0] },
+                                                    { $lt: ["$sales_diff", 101] },
+                                                    { $gt: ["$mp_sales_amt", 0] },
+                                                    { $gt: ["$sap_sales_amt", 0] }
+                                                ]
+                                            },
+                                            then: "ONLY VALUE SHORT POSTED",
+                                            else: {
+                                                $cond: {
+                                                    if: {
+                                                        $and: [
+                                                            { $lt: ["$sales_diff", 0] },
+                                                            { $gt: ["$sales_diff", -101] },
+                                                            { $gt: ["$mp_sales_amt", 0] },
+                                                            { $gt: ["$sap_sales_amt", 0] }
+                                                        ]
+                                                    },
+                                                    then: "ONLY VALUE EXCESS POSTED",
+                                                    else: {
+                                                        $cond: {
+                                                            if: {
+                                                                $and: [
+                                                                    { $gte: [{ $multiply: [-1, "$sales_diff"] }, { $divide: ["$mp_sales_amt", "$mp_sale_qty"] }] },
+                                                                    { $lt: ["$sales_diff", 0] }
+                                                                ]
+                                                            },
+                                                            then: "EXCESS POSTED",
+                                                            else: {
+                                                                $cond: {
+                                                                    if: {
+                                                                        $and: [
+                                                                            { $lte: ["$sales_diff", 0] },
+                                                                            { $eq: ["$mp_sales_amt", 0] }
+                                                                        ]
+                                                                    },
+                                                                    then: "NOT REFLECTING IN MKT REPORT",
+                                                                    else: {
+                                                                        $cond: {
+                                                                            if: {
+                                                                                $and: [
+                                                                                    { $gte: [{ $multiply: [-1, "$sales_diff"] }, { $divide: ["$mp_sales_amt", "$mp_sale_qty"] }] },
+                                                                                    { $gt: ["$sap_sales_amt", 0] }
+                                                                                ]
+                                                                            },
+                                                                            then: "SHORT POSTED",
+                                                                            else: {
+                                                                                $cond: {
+                                                                                    if: {
+                                                                                        $and: [
+                                                                                            { $eq: ["$sap_sales_amt", 0] },
+                                                                                            { $gte: ["$mp_sales_amt", 0] }
+                                                                                        ]
+                                                                                    },
+                                                                                    then: "NOT REFLECTING IN RRL REPORT",
+                                                                                    else: "CHECK"
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        $addFields: {
+            sales_actionables: {
+                $cond: {
+                    if: { $eq: ["$exception_description_sales", "EXACT POSTED"] },
+                    then: "NO ACTION REQUIRED",
+                    else: {
+                        $cond: {
+                            if: { $eq: ["$exception_description_sales", "UNSHIPPED"] },
+                            then: "NO ACeTION REQUIRED",
+                            else: {
+                                $cond: {
+                                    if: { $eq: ["$exception_description_sales", "CANCELLED"] },
+                                    then: "CANCELLED",
+                                    else: {
+                                        $cond: {
+                                            if: { $eq: ["$exception_description_sales", "SHORT POSTED"] },
+                                            then: "POST AS SALE",
+                                            else: {
+                                                $cond: {
+                                                    if: { $eq: ["$exception_description_sales", "EXCESS POSTED"] },
+                                                    then: "POST AS RETURN",
+                                                    else: {
+                                                        $cond: {
+                                                            if: { $eq: ["$exception_description_sales", "ONLY VALUE SHORT POSTED"] },
+                                                            then: "MARK SALE JV",
+                                                            else: {
+                                                                $cond: {
+                                                                    if: { $eq: ["$exception_description_sales", "ONLY VALUE EXCESS POSTED"] },
+                                                                    then: "MARK RETURN JV",
+                                                                    else: {
+                                                                        $cond: {
+                                                                            if: { $eq: ["$exception_description_sales", "NOT REFLECTING IN MKT REPORT"] },
+                                                                            then: "CHECK MKT RPRT",
+                                                                            else: {
+                                                                                $cond: {
+                                                                                    if: { $eq: ["$exception_description_sales", "NOT REFLECTING IN RRL REPORT"] },
+                                                                                    then: "POST AS SALE",
+                                                                                    else: "CHECK"
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        $addFields: {
+            exception_description_returns: {
+                $cond: {
+                    if: {
+                        $and: [
+                            { $eq: ["$sap_return_amt", 0] },
+                            { $eq: ["$sap_sales_amt", 0] },
+                            { $eq: ["$exception_description_sales", "Cancelled"] },
+                            { $gt: ["$returns_diff", 0] }
+                        ]
+                    },
+                    then: "CANCELLED",
+                    else: {
+                        $cond: {
+                            if: {
+                                $and: [
+                                    { $gt: ["$returns_diff", 0] },
+                                    { $lt: ["$returns_diff", 101] },
+                                    { $gt: ["$mp_return_amt", 0] },
+                                    { $gt: ["$sap_return_amt", 0] }
+                                ]
+                            },
+                            then: "ONLY VALUE SHORT POSTED",
+                            else: {
+                                $cond: {
+                                    if: {
+                                        $and: [
+                                            { $lt: ["$returns_diff", 0] },
+                                            { $gt: ["$returns_diff", -101] },
+                                            { $gt: ["$mp_return_amt", 0] },
+                                            { $gt: ["$sap_return_amt", 0] }
+                                        ]
+                                    },
+                                    then: "ONLY VALUE EXCESS POSTED",
+                                    else: {
+                                        $cond: {
+                                            if: {
+                                                $and: [
+                                                    { $eq: ["$order_status", "Failed Before Pickup"] },
+                                                    { $eq: ["$sap_sales_amt", 0] },
+                                                    { $gt: ["$sap_return_amt", 0] },
+                                                    { $gt: ["$returns_diff", 0] },
+                                                    { $lt: ["$returns_diff", 100] }
+                                                ]
+                                            },
+                                            then: "ONLY VALUE SHORT POSTED",
+                                            else: {
+                                                $cond: {
+                                                    if: {
+                                                        $and: [
+                                                            { $eq: ["$order_status", "Failed Before Pickup"] },
+                                                            { $eq: ["$sap_sales_amt", 0] },
+                                                            { $gt: ["$sap_return_amt", 0] },
+                                                            { $lt: ["$returns_diff", 0] },
+                                                            { $gt: ["$returns_diff", -100] }
+                                                        ]
+                                                    },
+                                                    then: "ONLY VALUE EXCESS POSTED",
+                                                    else: {
+                                                        $cond: {
+                                                            if: {
+                                                                $and: [
+                                                                    { $eq: ["$sap_return_amt", 0] },
+                                                                    { $eq: ["$return_status", "Cancelled"] },
+                                                                    { $gt: ["$returns_diff", 0] }
+                                                                ]
+                                                            },
+                                                            then: "NOT REFLECTING IN RRL REPORT",
+                                                            else: {
+                                                                $cond: {
+                                                                    if: {
+                                                                        $and: [
+                                                                            { $eq: ["$sap_return_amt", 0] },
+                                                                            { $eq: ["$return_status", "Awaiting Pickup"] }
+                                                                        ]
+                                                                    },
+                                                                    then: "UNSHIPPED",
+                                                                    else: {
+                                                                        $cond: {
+                                                                            if: {
+                                                                                $and: [
+                                                                                    { $eq: ["$mp_return_amt", "$sap_return_amt"] },
+                                                                                    { $eq: ["$returns_diff", 0] }
+                                                                                ]
+                                                                            },
+                                                                            then: "EXACT POSTED",
+                                                                            else: {
+                                                                                $cond: {
+                                                                                    if: {
+                                                                                        $and: [
+                                                                                            { $eq: ["$mp_return_amt", 0] },
+                                                                                            { $gt: ["$sap_return_amt", 0] }
+                                                                                        ]
+                                                                                    },
+                                                                                    then: "EXCESS POSTED",
+                                                                                    else: {
+                                                                                        $cond: {
+                                                                                            if: {
+                                                                                                $and: [
+                                                                                                    { $gte: [{ $multiply: [-1, "$returns_diff"] }, { $divide: ["$mp_return_amt", "$mp_return_qty"] }] },
+                                                                                                    { $lt: ["$returns_diff", 0] }
+                                                                                                ]
+                                                                                            },
+                                                                                            then: "EXCESS POSTED",
+                                                                                            else: {
+                                                                                                $cond: {
+                                                                                                    if: {
+                                                                                                        $and: [
+                                                                                                            { $lte: ["$returns_diff", 0] },
+                                                                                                            { $eq: ["$mp_return_amt", 0] }
+                                                                                                        ]
+                                                                                                    },
+                                                                                                    then: "NOT REFLECTING IN MKT REPORT",
+                                                                                                    else: {
+                                                                                                        $cond: {
+                                                                                                            if: {
+                                                                                                                $and: [
+                                                                                                                    { $eq: [{ $multiply: [-1, "$returns_diff"] }, { $divide: ["$mp_return_amt", "$mp_return_qty"] }] },
+                                                                                                                    { $lt: ["$returns_diff", 0] }
+                                                                                                                ]
+                                                                                                            },
+                                                                                                            then: "EXCESS POSTED",
+                                                                                                            else: {
+                                                                                                                $cond: {
+                                                                                                                    if: {
+                                                                                                                        $and: [
+                                                                                                                            { $eq: ["$sap_return_amt", 0] },
+                                                                                                                            { $gte: ["$mp_return_amt", 0] }
+                                                                                                                        ]
+                                                                                                                    },
+                                                                                                                    then: "NOT REFLECTING IN RRL REPORT",
+                                                                                                                    else: "CHECK"
+                                                                                                                }
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        $addFields: {
+            returns_actionables: {
+                $cond: {
+                    if: { $eq: ["$exception_description_returns", "EXACT POSTED"] },
+                    then: "NO ACTION REQUIRED",
+                    else: {
+                        $cond: {
+                            if: { $eq: ["$exception_description_returns", "UNSHIPPED"] },
+                            then: "NO ACTION REQUIRED",
+                            else: {
+                                $cond: {
+                                    if: { $eq: ["$exception_description_returns", "CANCELLED"] },
+                                    then: "CANCELLED",
+                                    else: {
+                                        $cond: {
+                                            if: { $eq: ["$exception_description_returns", "SHORT POSTED"] },
+                                            then: "POST AS RETURN",
+                                            else: {
+                                                $cond: {
+                                                    if: { $eq: ["$exception_description_returns", "EXCESS POSTED"] },
+                                                    then: "POST AS SALE",
+                                                    else: {
+                                                        $cond: {
+                                                            if: { $eq: ["$exception_description_returns", "ONLY VALUE SHORT POSTED"] },
+                                                            then: "MARK RETURN JV",
+                                                            else: {
+                                                                $cond: {
+                                                                    if: { $eq: ["$exception_description_returns", "ONLY VALUE EXCESS POSTED"] },
+                                                                    then: "MARK SALE JV",
+                                                                    else: {
+                                                                        $cond: {
+                                                                            if: { $eq: ["$exception_description_returns", "NOT REFLECTING IN MKT REPORT"] },
+                                                                            then: "CHECK MKT RPRT",
+                                                                            else: {
+                                                                                $cond: {
+                                                                                    if: { $eq: ["$exception_description_returns", "NOT REFLECTING IN RRL REPORT"] },
+                                                                                    then: "POST AS RETURN",
+                                                                                    else: "CHECK"
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        $addFields: {
+            exception_description_net: {
+                $concat: [
+                    "SALE ",
+                    "$exception_description_sales",
+                    " & RETURN ",
+                    "$exception_description_returns"
+                ]
+            }
+        }
+    },
+   {
+    $addFields: {
+        actionables_net: {
+            $cond: {
+                if: { $eq: ["$exception_description_net", "SALE EXACT POSTED & RETURN EXACT POSTED"] },
+                then: "NO ACTION REQUIRED",
+                else: {
+                    $cond: {
+                        if: { $eq: ["$exception_description_net", "SALE ONLY VALUE EXCESS POSTED & RETURN EXACT POSTED"] },
+                        then: "MARK RETURN JV",
+                        else: {
+                            $cond: {
+                                if: { $eq: ["$exception_description_net", "SALE ONLY VALUE SHORT POSTED & RETURN EXACT POSTED"] },
+                                then: "MARK SALE JV",
+                                else: {
+                                    $cond: {
+                                        if: { $eq: ["$exception_description_net", "SALE NOT REFLECTING IN RRL REPORT & RETURN NOT REFLECTING IN RRL REPORT"] },
+                                        then: "NO ACTION REQUIRED",
+                                        else: {
+                                            $cond: {
+                                                if: { $eq: ["$exception_description_net", "SALE ONLY VALUE SHORT POSTED & RETURN NOT REFLECTING IN RRL REPORT"] },
+                                                then: "MARK SALE JV & POST AS RETURN",
+                                                else: {
+                                                    $cond: {
+                                                        if: { $eq: ["$exception_description_net", "SALE ONLY VALUE EXCESS POSTED & RETURN ONLY VALUE EXCESS POSTED"] },
+                                                        then: "NO ACTION REQUIRED",
+                                                        else: {
+                                                            $cond: {
+                                                                if: { $eq: ["$exception_description_net", "SALE ONLY VALUE EXCESS POSTED & RETURN NOT REFLECTING IN RRL REPORT"] },
+                                                                then: "MARK RETURN JV & POST AS RETURN",
+                                                                else: {
+                                                                    $cond: {
+                                                                        if: { $eq: ["$exception_description_net", "SALE NOT REFLECTING IN RRL REPORT & RETURN ONLY VALUE SHORT POSTED"] },
+                                                                        then: "POST AS SALE & MARK RETURN JV",
+                                                                        else: {
+                                                                            $cond: {
+                                                                                if: { $eq: ["$exception_description_net", "SALE ONLY VALUE SHORT POSTED & RETURN ONLY VALUE SHORT POSTED"] },
+                                                                                then: "NO ACTION REQUIRED",
+                                                                                else: {
+                                                                                    $cond: {
+                                                                                        if: { $eq: ["$exception_description_net", "SALE NOT REFLECTING IN RRL REPORT & RETURN ONLY VALUE EXCESS POSTED"] },
+                                                                                        then: "POST AS SALE & MARK SALE JV",
+                                                                                        else: {
+                                                                                            $cond: {
+                                                                                                if: { $eq: ["$exception_description_net", "SALE EXCESS POSTED & RETURN NOT REFLECTING IN RRL REPORT"] },
+                                                                                                then: "POST AS RETURN",
+                                                                                                else: {
+                                                                                                    $cond: {
+                                                                                                        if: { $eq: ["$exception_description_net", "SALE EXCESS POSTED & RETURN EXACT POSTED"] },
+                                                                                                        then: "POST AS RETURN",
+                                                                                                        else: {
+                                                                                                            $cond: {
+                                                                                                                if: {
+                                                                                                                    $and: [
+                                                                                                                        { $eq: ["$exception_description_net", "SALE EXCESS POSTED & RETURN EXCESS POSTED"] },
+                                                                                                                        { $gt: ["$net_diff", 0] }
+                                                                                                                    ]
+                                                                                                                },
+                                                                                                                then: "POST AS SALE",
+                                                                                                                else: {
+                                                                                                                    $cond: {
+                                                                                                                        if: {
+                                                                                                                            $and: [
+                                                                                                                                { $eq: ["$exception_description_net", "SALE EXCESS POSTED & RETURN EXCESS POSTED"] },
+                                                                                                                                { $lt: ["$net_diff", 0] }
+                                                                                                                            ]
+                                                                                                                        },
+                                                                                                                        then: "POST AS RETURN",
+                                                                                                                        else: {
+                                                                                                                            $cond: {
+                                                                                                                                if: {
+                                                                                                                                    $and: [
+                                                                                                                                        { $eq: ["$exception_description_net", "SALE EXCESS POSTED & RETURN EXCESS POSTED"] },
+                                                                                                                                        { $eq: ["$net_diff", 0] }
+                                                                                                                                    ]
+                                                                                                                                },
+                                                                                                                                then: "NO ACTION REQUIRED",
+                                                                                                                                else: {
+                                                                                                                                    $cond: {
+                                                                                                                                        if: { $eq: ["$exception_description_net", "SALE NOT REFLECTING IN RRL REPORT & RETURN EXCESS POSTED"] },
+                                                                                                                                        then: "POST AS SALE",
+                                                                                                                                        else: {
+                                                                                                                                            $cond: {
+                                                                                                                                                if: { $eq: ["$exception_description_net", "SALE CANCELLED & RETURN CANCELLED"] },
+                                                                                                                                                then: "CANCELLED",
+                                                                                                                                                else: {
+                                                                                                                                                    $cond: {
+                                                                                                                                                        if: { $eq: ["$exception_description_net", "SALE EXACT POSTED & RETURN ONLY VALUE EXCESS POSTED"] },
+                                                                                                                                                        then: "MARK SALE JV",
+                                                                                                                                                        else: {
+                                                                                                                                                            $cond: {
+                                                                                                                                                                if: { $eq: ["$exception_description_net", "SALE EXACT POSTED & RETURN EXCESS POSTED"] },
+                                                                                                                                                                then: "POST AS SALE",
+                                                                                                                                                                else: {
+                                                                                                                                                                    $cond: {
+                                                                                                                                                                        if: { $eq: ["$exception_description_net", "SALE EXCESS POSTED & RETURN ONLY VALUE EXCESS POSTED"] },
+                                                                                                                                                                        then: "POST AS RETURN & MARK SALE JV",
+                                                                                                                                                                        else: {
+                                                                                                                                                                            $cond: {
+                                                                                                                                                                                if: {
+                                                                                                                                                                                    $and: [
+                                                                                                                                                                                        { $eq: ["$exception_description_net", "SALE ONLY VALUE SHORT POSTED & RETURN ONLY VALUE EXCESS POSTED"] },
+                                                                                                                                                                                        { $eq: ["$net_diff", 0] }
+                                                                                                                                                                                    ]
+                                                                                                                                                                                },
+                                                                                                                                                                                then: "NO ACTION REQUIRED",
+                                                                                                                                                                                else: {
+                                                                                                                                                                                    $cond: {
+                                                                                                                                                                                        if: {
+                                                                                                                                                                                            $and: [
+                                                                                                                                                                                                { $eq: ["$exception_description_net", "SALE ONLY VALUE EXCESS POSTED & RETURN EXCESS POSTED"] },
+                                                                                                                                                                                                { $gt: ["$net_diff", 0] }
+                                                                                                                                                                                            ]
+                                                                                                                                                                                        },
+                                                                                                                                                                                        then: "POST AS SALE",
+                                                                                                                                                                                        else: {
+                                                                                                                                                                                            $cond: {
+                                                                                                                                                                                                if: { $eq: ["$exception_description_net", "SALE EXACT POSTED & RETURN ONLY VALUE SHORT POSTED"] },
+                                                                                                                                                                                                then: "MARK RETURN JV",
+                                                                                                                                                                                                else: "CHECK"
+                                                                                                                                                                                            }
+                                                                                                                                                                                        }
+                                                                                                                                                                                    }
+                                                                                                                                                                                }
+                                                                                                                                                                            }
+                                                                                                                                                                        }
+                                                                                                                                                                    }
+                                                                                                                                                                }
+                                                                                                                                                            }
+                                                                                                                                                        }
+                                                                                                                                                    }
+                                                                                                                                                }
+                                                                                                                                            }
+                                                                                                                                        }
+                                                                                                                                    }
+                                                                                                                                }
+                                                                                                                            }
+                                                                                                                        }
+                                                                                                                    }
+                                                                                                                }
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+},
+    {$out:"RK_Recon_Report"}
+])
